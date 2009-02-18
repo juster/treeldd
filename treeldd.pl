@@ -8,9 +8,7 @@ use Getopt::Long     qw(GetOptions);
 use Regexp::List;
 use Pod::Usage;
 use Readonly;
-use English          qw(-no_match_vars);
-
-use Data::Dumper;
+#use English          qw(-no_match_vars);
 
 ####
 #### CONSTANTS
@@ -31,13 +29,14 @@ Readonly my $PACMAN_CMD    => 'pacman -Qo ';
 Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xms;
 Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
 
-Readonly my $IGNORELIB_MATCH => Regexp::List->new->list2re
-    ( map { ("lib$_.so" => 1) } split /s+/, << 'END_LIST' );
+Readonly my $IGNORELIB_LIST => 'lib(?:' .
+    join('|', ( sort split /\s+/, << 'END_LIST' )) . ').so';
 BrokenLocale anl c cidn crypt dl m nsl nss_compat nss_dns nss_files
 nss_hesiod nss_nis nss_nisplus pthread resolv rt c m crypt X11 z bz2
-jpeg tiff wind Xt Xext ICE com_err crypt crypto /;
+jpeg tiff util wind Xt Xext ICE com_err crypt crypto /;
 END_LIST
 
+Readonly my $IGNORELIB_MATCH => qr/\A$IGNORELIB_LIST/;
 
 ####
 #### GLOBALS
@@ -68,8 +67,8 @@ sub get_owner_pkg
                        : find_sharedlib_path($sharedlib) );
     };
 
-    if ($EVAL_ERROR) {
-        die $EVAL_ERROR if ( $EVAL_ERROR !~ /\A$MISSINGLIB_EX/ms );
+    if ($@) {
+        die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ms );
         return '?';
     }
 
@@ -190,8 +189,8 @@ sub make_dep_tree
     $was_checked->{$file_or_lib} = 1;
 
     # Give up on this path if we can't find a library file...
-    if ($EVAL_ERROR) {
-        die $EVAL_ERROR if ( $EVAL_ERROR !~ /\A$MISSINGLIB_EX/ );
+    if ($@) {
+        die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
         return undef;
     }
 
@@ -244,7 +243,7 @@ my @output = make_tree_display($deptree);
 sub tree_to_packages {
     my $libname = $_->[0];
     $libname =~ s/ \A [*] //xms;
-    return ( get_lib_owner($libname),
+    return ( get_owner_pkg($libname),
              map &tree_to_packages, @{$_}[ 1 .. $#$_ ] );
 }
 
