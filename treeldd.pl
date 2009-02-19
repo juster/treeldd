@@ -8,6 +8,8 @@ use Getopt::Long     qw(GetOptions);
 use Regexp::List;
 use Pod::Usage;
 use Readonly;
+use Memoize;
+
 #use English          qw(-no_match_vars);
 
 ####
@@ -20,29 +22,30 @@ Readonly my $LD_PATHS      => [ qw{ /lib /usr/lib },
 Readonly my $MISSINGLIB_EX => 'Could not find shared library file:';
 
 Readonly my $READELF_CMD   => 'readelf --dynamic ';
-Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
+Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xmso;
 
 Readonly my $READELF_SHARED_LIBS => qr{ Shared[ ]library:
-                                        [ ] [[] ([\w.]*) []] }xms;
+                                        [ ] [[] ([\w.]*) []] }xmso;
 
 Readonly my $PACMAN_CMD    => 'pacman -Qo ';
-Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xms;
-Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
+Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xmso;
+Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xmso;
 
+# Ignore libs from packages: glibc gcc-libs crypt
 Readonly my $IGNORELIB_LIST => 'lib(?:' .
     join('|', ( sort split /\s+/, << 'END_LIST' )) . ').so';
 BrokenLocale anl c cidn crypt dl m nsl nss_compat nss_dns nss_files
 nss_hesiod nss_nis nss_nisplus pthread resolv rt c m crypt X11 z bz2
-jpeg tiff util wind Xt Xext ICE com_err crypt crypto /;
+gcc_s gfortran gomp mudflap mudflapth objc ssp stdc++
 END_LIST
-
-Readonly my $IGNORELIB_MATCH => qr/\A$IGNORELIB_LIST/;
 
 ####
 #### GLOBALS
 ####
 
 my $VERBOSE = 0;
+my $IGNORELIB_MATCH = qr/\A$IGNORELIB_LIST/o;
+my %DEPS_OF;
 
 
 ####
@@ -81,6 +84,8 @@ sub get_owner_pkg
     return $owner_pkg || '?';
 }
 
+memoize('get_owner_pkg');
+
 #---FUNCTION---
 # Usage   : my @output_lines = make_tree_display($tree);
 # Params  : $tree - Array reference that represents a tree
@@ -92,7 +97,9 @@ sub get_owner_pkg
 
 sub make_tree_display
 {
-    my ($tree, $depth_counts) = @_;
+    my ($tree, $maxdepth, $depth_counts) = @_;
+
+    return () if $maxdepth-- < 0;
 
     $depth_counts ||= [ ];
     my $node_name = $tree->[0];
@@ -116,7 +123,7 @@ sub make_tree_display
     # Recurse through the the children nodes...
     my $child_count = $#$tree;
     for my $i ( 1 .. $#$tree ) {
-        push @tree_lines, make_tree_display( $tree->[$i],
+        push @tree_lines, make_tree_display( $tree->[$i], $maxdepth,
                                             [ @$depth_counts,
                                               $child_count-- ] );
     }
@@ -141,6 +148,7 @@ sub find_sharedlib_path
 
     die "$MISSINGLIB_EX $lib_filename\n";
 }
+memoize('find_sharedlib_path');
 
 #---FUNCTION---
 # Usage   : my @needed_libs = readelf_sharedlibs($elf_file)
@@ -163,8 +171,10 @@ sub readelf_sharedlibs
         die "readelf command failed: $1\n";
     }
 
-    return $readelf_output =~ /$READELF_SHARED_LIBS/g;
+    return grep { $_ !~ /$IGNORELIB_MATCH/ }
+        $readelf_output =~ /$READELF_SHARED_LIBS/g;
 }
+memoize('readelf_sharedlibs');
 
 #---FUNCTION---
 # Usage   : my $tree = make_dep_tree( $filepath_or_libname );
@@ -177,16 +187,16 @@ sub readelf_sharedlibs
 
 sub make_dep_tree
 {
-    my ($file_or_lib, $was_checked) = @_;
+    my ($file_or_lib, $node_of) = @_;
 
-    $was_checked = {} unless ( eval { ref $was_checked eq 'HASH' } );
+    $node_of = {} unless ( eval { ref $node_of eq 'HASH' } );
 
-    return ( $VERBOSE ? [ "*$file_or_lib" ] : undef )
-        if ( $was_checked->{$file_or_lib} );
+    return $node_of->{$file_or_lib} if ( exists $node_of->{$file_or_lib} );
+
+    my $new_node = [ $file_or_lib ];
+    $node_of->{$file_or_lib} = $new_node;
 
     my @needed_libs = eval { readelf_sharedlibs($file_or_lib) };
-
-    $was_checked->{$file_or_lib} = 1;
 
     # Give up on this path if we can't find a library file...
     if ($@) {
@@ -199,16 +209,61 @@ sub make_dep_tree
 
     NEEDED_LIBRARY:
     for my $sharedlib (@needed_libs) {
-        next NEEDED_LIBRARY if ( $sharedlib =~ /$IGNORELIB_MATCH/ );
+        next NEEDED_LIBRARY if ( $VERBOSE < 2 &&
+                                 $sharedlib =~ /$IGNORELIB_MATCH/ );
 
-        my $child_paths = make_dep_tree( $sharedlib, $was_checked );
+        my $child_paths = make_dep_tree( $sharedlib, $node_of );
 
         if ( defined $child_paths ) {
-            push @found_paths, $child_paths;
+            push @{$new_node}, $child_paths;
         }
     }
 
-    return [ $file_or_lib, @found_paths ];
+    return $new_node;
+}
+
+
+sub make_dep_tree_bfs
+{
+    my ($file_or_lib) = @_;
+
+    my $root_node = [ $file_or_lib ];
+    my (@queue, %was_checked) = $root_node;
+
+    LIBRARY_DEP:
+    while (scalar @queue) {
+        my $node = shift @queue;
+        my $node_name = $node->[0];
+
+        my @needed_libs = eval { readelf_sharedlibs($node_name) };
+
+        next LIBRARY_DEP if ( $was_checked{$node_name} );
+
+        $was_checked{$node_name} = 1;
+
+        # Give up on this path if we can't find a library file...
+        if ($@) {
+            die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
+            next LIBRARY_DEP;
+        }
+
+        NEW_NODE:
+        for my $new_child (@needed_libs) {
+            next NEW_NODE if ( $new_child =~ /$IGNORELIB_MATCH/ );
+            if ($was_checked{$new_child}) {
+                next NEW_NODE if ! $VERBOSE;
+                $new_child = "*$new_child";
+            }
+            my $new_child_node = [ $new_child ];
+            push @{$node}, $new_child_node;
+
+            if ( substr $new_child, 0, 1 ne '*' ) {
+                push @queue, $new_child_node;
+            }
+        }
+    }
+
+    return $root_node;
 }
 
 
@@ -217,11 +272,15 @@ sub make_dep_tree
 ####
 
 # Get command lines options and print usage if a problem occurs...
-my ($maxdepth, $show_pkgs, $show_help, $show_man);
+my ($show_pkgs, $show_help, $show_man,
+    $maxdepth, $use_bfs);
+
+$maxdepth = 5;
 
 GetOptions( 'depth=i',  \$maxdepth,
             'packages', \$show_pkgs,
-            'verbose',  \$VERBOSE,
+            'verbose+', \$VERBOSE,
+            'bfs',      \$use_bfs,
 
             'help',     \$show_help,
             'man',      \$show_man );
@@ -235,15 +294,16 @@ pod2usage("error: $binfile file not found\n") if ( ! -e $binfile );
 
 # Create our shared library dependency tree...
 my %is_target_lib = map { ( $_ => 1 ) } @target_libs;
+
 my $deptree = make_dep_tree( $binfile );
 
-my @output = make_tree_display($deptree);
+my @output = make_tree_display($deptree, $maxdepth);
 
 # Append the names of packages who own the files to each line if requested...
 sub tree_to_packages {
-    my $libname = $_->[0];
-    $libname =~ s/ \A [*] //xms;
-    return ( get_owner_pkg($libname),
+#    my $libname = $_->[0];
+#    $libname    =~ s/ \A [*] //xms;
+    return ( get_owner_pkg($_->[0]),
              map &tree_to_packages, @{$_}[ 1 .. $#$_ ] );
 }
 
