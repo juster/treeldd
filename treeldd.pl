@@ -5,7 +5,6 @@ use strict;
 
 use List::MoreUtils  qw(pairwise);
 use Getopt::Long     qw(GetOptions);
-use Regexp::List;
 use Pod::Usage;
 use Readonly;
 use Memoize;
@@ -22,30 +21,24 @@ Readonly my $LD_PATHS      => [ qw{ /lib /usr/lib },
 Readonly my $MISSINGLIB_EX => 'Could not find shared library file:';
 
 Readonly my $READELF_CMD   => 'readelf --dynamic ';
-Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xmso;
+Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
 
 Readonly my $READELF_SHARED_LIBS => qr{ Shared[ ]library:
-                                        [ ] [[] ([\w.]*) []] }xmso;
+                                        [ ] [[] ([\w.]*) []] }xms;
 
 Readonly my $PACMAN_CMD    => 'pacman -Qo ';
-Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xmso;
-Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xmso;
+Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xms;
+Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
 
 # Ignore libs from packages: glibc gcc-libs crypt
-Readonly my $IGNORELIB_LIST => 'lib(?:' .
-    join('|', ( sort split /\s+/, << 'END_LIST' )) . ').so';
+Readonly my $IGNORELIB_LIST =>
+    'lib(?:' . ( join '|', ( sort split /\s+/, << 'END_LIST' ) ) . ').so';
 BrokenLocale anl c cidn crypt dl m nsl nss_compat nss_dns nss_files
 nss_hesiod nss_nis nss_nisplus pthread resolv rt c m crypt X11 z bz2
 gcc_s gfortran gomp mudflap mudflapth objc ssp stdc++
 END_LIST
 
-####
-#### GLOBALS
-####
-
-my $VERBOSE = 0;
-my $IGNORELIB_MATCH = qr/\A$IGNORELIB_LIST/o;
-my %DEPS_OF;
+Readonly my $IGNORELIB_MATCH => qr/$IGNORELIB_LIST/o;
 
 
 ####
@@ -85,51 +78,6 @@ sub get_owner_pkg
 }
 
 memoize('get_owner_pkg');
-
-#---FUNCTION---
-# Usage   : my @output_lines = make_tree_display($tree);
-# Params  : $tree - Array reference that represents a tree
-#           $depth_counts - *Internal Use Only* A stack of item counts at each
-#                           depth level, used to display vertical lines.
-# Returns : Lines suitable to print to screen, output is a textual tree
-#           exactly like the 'tree' command-line program.
-#--------------
-
-sub make_tree_display
-{
-    my ($tree, $maxdepth, $depth_counts) = @_;
-
-    return () if $maxdepth-- < 0;
-
-    $depth_counts ||= [ ];
-    my $node_name = $tree->[0];
-
-    my $prefix = '';
-    if ( @$depth_counts ) {
-        # If there are no more items in a depth above us, they
-        # won't need a line to represent their branch.
-        for my $i ( 0 .. $#$depth_counts-1 ) {
-            my $nodes_on_depth = $depth_counts->[$i];
-            $prefix .= ( $nodes_on_depth > 0 ? '|   ' : '    ' );
-        }
-
-        # If this is the last item, make a curved "twig".
-        my $more_siblings = --$depth_counts->[-1];
-        $prefix .= ( $more_siblings ? '|-- ' : '`-- ' );
-    }
-
-    my @tree_lines = ( "$prefix$node_name\n" );
-
-    # Recurse through the the children nodes...
-    my $child_count = $#$tree;
-    for my $i ( 1 .. $#$tree ) {
-        push @tree_lines, make_tree_display( $tree->[$i], $maxdepth,
-                                            [ @$depth_counts,
-                                              $child_count-- ] );
-    }
-
-    return @tree_lines;
-}
 
 #---FUNCTION---
 # Usage   : my $abs_lib_path = find_sharedlib_path($lib_filename)
@@ -177,93 +125,128 @@ sub readelf_sharedlibs
 memoize('readelf_sharedlibs');
 
 #---FUNCTION---
+# Usage   : my @output_lines = make_tree_display($tree, $maxdepth);
+# Params  : $tree - Array reference that represents a tree
+#           $maxdepth - How deep in the tree to display, depth 0 is the root
+#           $depth_counts - *Internal Use Only* A stack of item counts at each
+#                           depth level, used to display vertical lines.
+# Returns : Lines suitable to print to screen, output is a textual tree
+#           exactly like the 'tree' command-line program.
+#--------------
+
+sub print_tree
+{
+    my ($dep_tree, $max_depth) = @_;
+    my ($closure);
+
+    $closure = sub {
+        my ($tree, $depth, $depth_counts) = @_;
+
+        return () if ( $depth-- < 0 );
+
+        my $node_name = $tree->[0];
+
+        my $prefix = '';
+        if ( @$depth_counts ) {
+            # If there are no more items in a depth above us, they
+            # won't need a line to represent their branch.
+            for my $i ( 0 .. $#$depth_counts-1 ) {
+                my $nodes_on_depth = $depth_counts->[$i];
+                $prefix .= ( $nodes_on_depth > 0 ? '|   ' : '    ' );
+            }
+
+            # If this is the last item, make a curved "twig".
+            my $more_siblings = --$depth_counts->[-1];
+            $prefix .= ( $more_siblings ? '|-- ' : '`-- ' );
+        }
+
+        #my @tree_lines = ( "$prefix$node_name\n" );
+        print "$prefix$node_name\n";
+
+        # Recurse through the the children nodes...
+        my $child_count = $#$tree;
+        for my $i ( 1 .. $#$tree ) {
+            #push @tree_lines,
+            $closure->( $tree->[$i], $depth,
+                        [ @$depth_counts,
+                          $child_count-- ] );
+        }
+
+        #return @tree_lines;
+        return;
+    };
+
+    return $closure->( $dep_tree, $max_depth, [ ] );
+}
+
+sub make_traverser
+{
+    my ($user_func) = @_;
+
+    my (%we_visited, $closure);
+    $closure = sub {
+        my $tree_node = shift;
+        return if $we_visited{$tree_node};
+
+        $user_func->($tree_node);
+        $we_visited{$tree_node} = 1;
+
+        for my $i ( 1 .. $#$tree_node ) {
+            $closure->($tree_node->[$i]);
+        }
+        return;
+    };
+
+    return $closure;
+}
+
+#---FUNCTION---
 # Usage   : my $tree = make_dep_tree( $filepath_or_libname );
 # Params  : filepath_or_libname - File or library to become the tree-top.
-#           was_checked         - *Internal Use Only* a hashref matching
-#                                 files/libs already examined
 # Returns : A tree represented as nested array refs.  This tree represents
-#           all the dependencies of the program, its dependencies, etc.
+#           all the dependencies of the program, the deps' dependencies, etc...
 #--------------
 
 sub make_dep_tree
 {
-    my ($file_or_lib, $node_of) = @_;
+    # Create a closure in order to keep our hash hidden...
+    my (%node_of, $closure);
 
-    $node_of = {} unless ( eval { ref $node_of eq 'HASH' } );
+    $closure = sub {
+        my ($file_or_lib) = @_;
 
-    return $node_of->{$file_or_lib} if ( exists $node_of->{$file_or_lib} );
+        return $node_of{$file_or_lib} if ( exists $node_of{$file_or_lib} );
 
-    my $new_node = [ $file_or_lib ];
-    $node_of->{$file_or_lib} = $new_node;
+        my $new_node = [ $file_or_lib ];
+        $node_of{$file_or_lib} = $new_node;
 
-    my @needed_libs = eval { readelf_sharedlibs($file_or_lib) };
-
-    # Give up on this path if we can't find a library file...
-    if ($@) {
-        die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
-        return undef;
-    }
-
-    # Recurse until we have checked every library...
-    my @found_paths;
-
-    NEEDED_LIBRARY:
-    for my $sharedlib (@needed_libs) {
-        next NEEDED_LIBRARY if ( $VERBOSE < 2 &&
-                                 $sharedlib =~ /$IGNORELIB_MATCH/ );
-
-        my $child_paths = make_dep_tree( $sharedlib, $node_of );
-
-        if ( defined $child_paths ) {
-            push @{$new_node}, $child_paths;
-        }
-    }
-
-    return $new_node;
-}
-
-
-sub make_dep_tree_bfs
-{
-    my ($file_or_lib) = @_;
-
-    my $root_node = [ $file_or_lib ];
-    my (@queue, %was_checked) = $root_node;
-
-    LIBRARY_DEP:
-    while (scalar @queue) {
-        my $node = shift @queue;
-        my $node_name = $node->[0];
-
-        my @needed_libs = eval { readelf_sharedlibs($node_name) };
-
-        next LIBRARY_DEP if ( $was_checked{$node_name} );
-
-        $was_checked{$node_name} = 1;
+        my @needed_libs = eval { readelf_sharedlibs($file_or_lib) };
 
         # Give up on this path if we can't find a library file...
         if ($@) {
             die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
-            next LIBRARY_DEP;
+            return undef;
         }
 
-        NEW_NODE:
-        for my $new_child (@needed_libs) {
-            next NEW_NODE if ( $new_child =~ /$IGNORELIB_MATCH/ );
-            if ($was_checked{$new_child}) {
-                next NEW_NODE if ! $VERBOSE;
-                $new_child = "*$new_child";
-            }
-            my $new_child_node = [ $new_child ];
-            push @{$node}, $new_child_node;
+        # Recurse until we have checked every library...
+        my @found_paths;
 
-            if ( substr $new_child, 0, 1 ne '*' ) {
-                push @queue, $new_child_node;
+        NEEDED_LIBRARY:
+        for my $sharedlib (@needed_libs) {
+#            next NEEDED_LIBRARY if ( $VERBOSE < 2 &&
+#                                     $sharedlib =~ /$IGNORELIB_MATCH/ );
+
+            my $child_paths = $closure->($sharedlib);
+
+            if ( defined $child_paths ) {
+                push @{$new_node}, $child_paths;
             }
         }
-    }
 
-    return $root_node;
+        return $new_node;
+    };
+
+    return $closure->(@_);
 }
 
 
@@ -273,48 +256,79 @@ sub make_dep_tree_bfs
 
 # Get command lines options and print usage if a problem occurs...
 my ($show_pkgs, $show_help, $show_man,
-    $maxdepth, $use_bfs);
+    $max_depth, $use_bfs, $verbose);
 
-$maxdepth = 5;
+$verbose   = 0;
 
-GetOptions( 'depth=i',  \$maxdepth,
+GetOptions( 'depth=i',  \$max_depth,
             'packages', \$show_pkgs,
-            'verbose+', \$VERBOSE,
-            'bfs',      \$use_bfs,
+            'verbose+', \$verbose,
 
             'help',     \$show_help,
             'man',      \$show_man );
 
-my ($binfile, @target_libs) = @ARGV;
+my ($elf_file, @target_libs) = @ARGV;
 
 pod2usage({ -verbose => 2 }) if ($show_man);
 pod2usage({ -verbose => 1 }) if ($show_help);
-pod2usage() if (!$binfile);
-pod2usage("error: $binfile file not found\n") if ( ! -e $binfile );
+pod2usage() if (!$elf_file);
+pod2usage("error: $elf_file not found\n") if ( ! -e $elf_file );
+
+$max_depth ||= ( $verbose >= 1 ? 4 : 8 );
 
 # Create our shared library dependency tree...
-my %is_target_lib = map { ( $_ => 1 ) } @target_libs;
+my $dep_tree = make_dep_tree($elf_file);
 
-my $deptree = make_dep_tree( $binfile );
-
-my @output = make_tree_display($deptree, $maxdepth);
-
-# Append the names of packages who own the files to each line if requested...
-sub tree_to_packages {
-#    my $libname = $_->[0];
-#    $libname    =~ s/ \A [*] //xms;
-    return ( get_owner_pkg($_->[0]),
-             map &tree_to_packages, @{$_}[ 1 .. $#$_ ] );
+# Tack the name of the package who owns the file onto the library name
+# if requested with the --packages option.
+if ($show_pkgs) {
+    my $pkg_tacker = make_traverser( sub {
+                                         my $node = shift;
+                                         my $owner = get_owner_pkg($node->[0]);
+                                         $node->[0] .= " ($owner)";
+                                     } );
+    $pkg_tacker->($dep_tree);
 }
 
-if ( $show_pkgs ) {
-    my @owner_list = map &tree_to_packages, $deptree;
+# Different levels of verbosity allow for bigger trees...
+if ( $verbose < 2 ) {
+    my $tree_clipper = make_traverser( do {
+        my %has_dup;
 
-    @output = pairwise { chomp $b; chomp $a; "$a ($b)\n"; }
-        @output, @owner_list;
+        # Create a different clipping action depending on verbosity level...
+        my @dispatch = ( sub {
+                             my ($node, $child_idx) = @_;
+                             splice @{$node}, $child_idx, 1;
+                         },
+                         sub {
+                             my ($node, $child_idx) = @_;
+                             my $child_name = $node->[$child_idx][0];
+                             $node->[$child_idx] = [ "$child_name ..." ];
+                         } );
+
+        # Search for duplicates and "clip" them...
+        my $clip_func = $dispatch[$verbose];
+        sub {
+            my $node = shift;
+            my $i = 1;
+            CHILD_NODE:
+            while ( $i <= $#$node ) {
+                my $child_node = $node->[$i];
+                if ($has_dup{$child_node}++) {
+                    $clip_func->($node, $i);
+                    next CHILD_NODE;
+                }
+                ++$i;
+            }
+            return;
+        };
+    } );
+
+    $tree_clipper->($dep_tree);
 }
 
-print @output;
+print_tree( $dep_tree, $max_depth );
+
 exit 0;
 
 __END__
