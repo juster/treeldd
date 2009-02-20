@@ -6,6 +6,7 @@ use strict;
 use List::MoreUtils  qw(pairwise);
 use Getopt::Long     qw(GetOptions);
 use Pod::Usage;
+use IPC::Cmd         qw(can_run run);
 use Readonly;
 use Memoize;
 
@@ -20,13 +21,13 @@ Readonly my $LD_PATHS      => [ qw{ /lib /usr/lib },
                                 split /:/, $ENV{LD_LIBRARY_PATH} : () ];
 Readonly my $MISSINGLIB_EX => 'Could not find shared library file:';
 
-Readonly my $READELF_CMD   => 'readelf --dynamic ';
+Readonly my $READELF_OPTS  => '--dynamic';
 Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
 
 Readonly my $READELF_SHARED_LIBS => qr{ Shared[ ]library:
                                         [ ] [[] ([\w.]*) []] }xms;
 
-Readonly my $PACMAN_CMD    => 'pacman -Qo ';
+Readonly my $PACMAN_OPTS   => '-Qo';
 Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xms;
 Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
 
@@ -39,6 +40,12 @@ gcc_s gfortran gomp mudflap mudflapth objc ssp stdc++
 END_LIST
 
 Readonly my $IGNORELIB_MATCH => qr/$IGNORELIB_LIST/o;
+
+####
+#### GLOBALS
+####
+
+my ($PACMAN_PATH, $READELF_PATH);
 
 
 ####
@@ -68,12 +75,15 @@ sub get_owner_pkg
         return '?';
     }
 
-    my $pacman_output = `$PACMAN_CMD $file_path`;
-    if ( $pacman_output =~ $PACMAN_ERROR ) {
-        die "pacman command failed: $1\n";
-    }
+    my ($success, $readelf_output);
+    $success = run( command => [ $PACMAN_PATH, $PACMAN_OPTS, $file_path ],
+                    buffer => \$readelf_output );
 
-    my ($owner_pkg) = $pacman_output =~ /$PACMAN_OWNER/;
+    return '?' if ( !$success );
+#        my ($error) = $readelf_output =~ /$PACMAN_ERROR/;
+#        die "pacman command failed: $error\n";
+
+    my ($owner_pkg) = $readelf_output =~ /$PACMAN_OWNER/;
     return $owner_pkg || '?';
 }
 
@@ -113,10 +123,14 @@ sub readelf_sharedlibs
                          ? $elf_file
                          : find_sharedlib_path($elf_file) );
 
-    my $readelf_output = `$READELF_CMD $elf_filepath`;
+    my ($success, $readelf_output);
 
-    if ( $readelf_output =~ /$READELF_ERROR/ ) {
-        die "readelf command failed: $1\n";
+    $success = run( command => [ $READELF_PATH, $READELF_OPTS, $elf_filepath ],
+                    buffer  => \$readelf_output );
+
+    if ( !$success ) {
+        my ($error) = $readelf_output =~ /$READELF_ERROR/;
+        die "readelf command failed: $error\n";
     }
 
     return grep { $_ !~ /$IGNORELIB_MATCH/ }
@@ -184,6 +198,7 @@ sub make_traverser
     my ($user_func) = @_;
 
     my (%we_visited, $closure);
+
     $closure = sub {
         my $tree_node = shift;
         return if $we_visited{$tree_node};
@@ -254,18 +269,32 @@ sub make_dep_tree
 #### SCRIPT START
 ####
 
+# Finds readelf and pacman programs...
+$PACMAN_PATH  = can_run('pacman')
+    or die "error: Cannot find the pacman program, a requirement of $0\n";
+$READELF_PATH = can_run('readelf')
+    or die "error: Cannot find the readelf program, a requirement of $0\n";
+
+die << 'END_ERROR' if ! IPC::Cmd->can_capture_buffer;
+Unknown Internal Error:
+
+The perl IPC::Cmd module reports it cannot capture output from called
+programs.  You might need to install the perl IPC::Open3 or IPC::Run
+modules for perl on your system.
+END_ERROR
+
 # Get command lines options and print usage if a problem occurs...
 my ($show_pkgs, $show_help, $show_man,
     $max_depth, $use_bfs, $verbose);
 
-$verbose   = 0;
+$verbose = 0;
 
-GetOptions( 'depth=i',  \$max_depth,
-            'packages', \$show_pkgs,
-            'verbose+', \$verbose,
+GetOptions( 'depth=i'  => \$max_depth,
+            'packages' => \$show_pkgs,
+            'verbose+' => \$verbose,
 
-            'help',     \$show_help,
-            'man',      \$show_man );
+            'help'     => \$show_help,
+            'man'      => \$show_man );
 
 my ($elf_file, @target_libs) = @ARGV;
 
@@ -290,21 +319,28 @@ if ($show_pkgs) {
     $pkg_tacker->($dep_tree);
 }
 
+die 'Unknown internal error: $verbose is negative' if ( $verbose < 0 );
+
 # Different levels of verbosity allow for bigger trees...
 if ( $verbose < 2 ) {
     my $tree_clipper = make_traverser( do {
         my %has_dup;
 
         # Create a different clipping action depending on verbosity level...
-        my @dispatch = ( sub {
-                             my ($node, $child_idx) = @_;
-                             splice @{$node}, $child_idx, 1;
-                         },
-                         sub {
-                             my ($node, $child_idx) = @_;
-                             my $child_name = $node->[$child_idx][0];
-                             $node->[$child_idx] = [ "$child_name ..." ];
-                         } );
+        my @dispatch =
+            (
+             # Only keep the first copy of a library that is found
+             sub {
+                 my ($node, $child_idx) = @_;
+                 splice @{$node}, $child_idx, 1;
+             },
+             # Tag all duplicate copies with '...' & remove children
+             sub {
+                 my ($node, $child_idx) = @_;
+                 my $child_name = $node->[$child_idx][0];
+                 $node->[$child_idx] = [ "$child_name ..." ];
+             },
+            );
 
         # Search for duplicates and "clip" them...
         my $clip_func = $dispatch[$verbose];
@@ -381,7 +417,8 @@ Who started this mess in the first place.
 
 =head1 AUTHOR
 
-Justin Davis, C<< jrcd<eighty-three> at gmail dot com >> (convert number to numeric), aka juster on L<bbs.archlinux.org>
+Justin Davis, C<< jrcd(eighty-three) at gmail dot com >>, aka juster
+on L<bbs.archlinux.org>
 
 =head1 COPYRIGHT & LICENSE
 
