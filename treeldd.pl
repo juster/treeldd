@@ -70,8 +70,8 @@ sub get_owner_pkg
 
     my $file_path;
     eval {
-        $file_path = ( -e $sharedlib ? $sharedlib
-                       : find_sharedlib_path($sharedlib) );
+        $file_path = ( -e $sharedlib ?
+                       $sharedlib : find_sharedlib_path($sharedlib) );
     };
 
     if ($@) {
@@ -330,15 +330,15 @@ pod2usage("error: $elf_file not found\n") if ( ! -e $elf_file );
 # level, otherwise the tree gets very spammy!
 $max_depth ||= ( $verbose >= 1 ? 4 : 8 );
 
-# Create our shared library dependency tree...
+# Create our recursive dependency tree...
 my $dep_tree = make_dep_tree($elf_file);
 
 # Tack the name of the package who owns the file onto the library name
 # if requested with the --packages option.
 if ($show_pkgs) {
     my $pkg_tacker = make_traverser( sub {
-                                         my $node = shift;
-                                         my $owner = get_owner_pkg($node->[0]);
+                                         my $node    = shift;
+                                         my $owner   = get_owner_pkg($node->[0]);
                                          $node->[0] .= " ($owner)";
                                      } );
     $pkg_tacker->($dep_tree);
@@ -346,7 +346,7 @@ if ($show_pkgs) {
 
 die 'Unknown internal error: $verbose is negative' if ( $verbose < 0 );
 
-# Different levels of verbosity allow for bigger trees...
+# Clip our tree unless we have full verbosity...
 if ( $verbose < 2 ) {
     my $tree_clipper = make_traverser( do {
         my %has_dup;
@@ -362,8 +362,8 @@ if ( $verbose < 2 ) {
              # Tag all duplicate copies with '...' & remove children
              sub {
                  my ($node, $child_idx) = @_;
-                 my $child_name = $node->[$child_idx][0];
-                 $node->[$child_idx] = [ "$child_name ..." ];
+                 my $child_name         = $node->[$child_idx][0];
+                 $node->[$child_idx]    = [ "$child_name ..." ];
              },
             );
 
@@ -375,7 +375,7 @@ if ( $verbose < 2 ) {
             CHILD_NODE:
             while ( $i <= $#$node ) {
                 my $child_node = $node->[$i];
-                if ($has_dup{$child_node}++) {
+                if ( $has_dup{$child_node}++ ) {
                     $clip_func->($node, $i);
                     next CHILD_NODE;
                 }
@@ -487,7 +487,7 @@ Who started this mess in the first place.
 
 =head1 AUTHOR
 
-Justin Davis, C<< jrcd83@gmail.com >>
+Justin Davis, C<< <jrcd83 at gmail.com> >>
 
 =head1 COPYRIGHT & LICENSE
 
