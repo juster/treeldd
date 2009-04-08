@@ -16,20 +16,22 @@ use Memoize;
 #### CONSTANTS
 ####
 
-Readonly my $LD_PATHS      => [ qw{ /lib /usr/lib },
-                                $ENV{LD_LIBRARY_PATH} ?
-                                split /:/, $ENV{LD_LIBRARY_PATH} : () ];
-Readonly my $MISSINGLIB_EX => 'Could not find shared library file:';
+Readonly my $LD_PATHS            => [ qw{ /lib /usr/lib },
+                                      $ENV{LD_LIBRARY_PATH} ?
+                                      split /:/, $ENV{LD_LIBRARY_PATH} : () ];
+Readonly my $MISSINGLIB_EX       => 'Could not find shared library file:';
 
-Readonly my $READELF_OPTS  => '--dynamic';
-Readonly my $READELF_ERROR => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
+Readonly my $MISSING_MATCH       => qr/ \A [*] MISSING [*] /xms;
+
+Readonly my $READELF_OPTS        => '--dynamic';
+Readonly my $READELF_ERROR       => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
 
 Readonly my $READELF_SHARED_LIBS => qr{ Shared[ ]library:
                                         [ ] [[] ([\w.]*) []] }xms;
 
-Readonly my $PACMAN_OPTS   => '-Qo';
-Readonly my $PACMAN_ERROR  => qr/ \A error: [ ] (.*?) $ /xms;
-Readonly my $PACMAN_OWNER  => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
+Readonly my $PACMAN_OPTS         => '-Qo';
+Readonly my $PACMAN_ERROR        => qr/ \A error: [ ] (.*?) $ /xms;
+Readonly my $PACMAN_OWNER        => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
 
 # Ignore libs from packages: glibc gcc-libs crypt
 Readonly my $IGNORELIB_LIST =>
@@ -64,6 +66,8 @@ sub get_owner_pkg
 {
     my ($sharedlib) = @_;
 
+    return '?' if ( $sharedlib =~ /$MISSING_MATCH/ );
+
     my $file_path;
     eval {
         $file_path = ( -e $sharedlib ? $sharedlib
@@ -86,7 +90,6 @@ sub get_owner_pkg
     my ($owner_pkg) = $readelf_output =~ /$PACMAN_OWNER/;
     return $owner_pkg || '?';
 }
-
 memoize('get_owner_pkg');
 
 #---FUNCTION---
@@ -133,27 +136,41 @@ sub readelf_sharedlibs
         die "readelf command failed: $error\n";
     }
 
-    return grep { $_ !~ /$IGNORELIB_MATCH/ }
+#     return grep { $_ !~ /$IGNORELIB_MATCH/ }
+#         $readelf_output =~ /$READELF_SHARED_LIBS/g;
+
+    my @libs = grep { $_ !~ /$IGNORELIB_MATCH/ }
         $readelf_output =~ /$READELF_SHARED_LIBS/g;
+
+    return @libs;
+
 }
 memoize('readelf_sharedlibs');
 
 #---FUNCTION---
-# Usage   : my @output_lines = make_tree_display($tree, $maxdepth);
-# Params  : $tree - Array reference that represents a tree
+# Usage   : my @output_lines = print_tree( $tree, $maxdepth );
+# Purpose : Prints a tree structure to the shell in ASCII text, like the
+#           tree directory listing command.
+# Params  : $tree     - Array reference that represents a tree
 #           $maxdepth - How deep in the tree to display, depth 0 is the root
-#           $depth_counts - *Internal Use Only* A stack of item counts at each
-#                           depth level, used to display vertical lines.
-# Returns : Lines suitable to print to screen, output is a textual tree
-#           exactly like the 'tree' command-line program.
+# Returns : Nothing.
 #--------------
 
 sub print_tree
 {
+    die 'Invalid arguments to print_tree()' if @_ != 2;
     my ($dep_tree, $max_depth) = @_;
     my ($closure);
 
+    #---CLOSURE---
+    # Params : $tree         - current sub-tree we are recursing over
+    #                          (even a node is its own sub-tree)
+    #          $depth        - the current depth level, basically a counter
+    #          $depth_counts - A stack of item counts at each depth level,
+    #                          used to display vertical lines.
+    #-------------
     $closure = sub {
+        die q{Invalid arguments to print_tree's internal closure} if @_ != 3;
         my ($tree, $depth, $depth_counts) = @_;
 
         return () if ( $depth-- < 0 );
@@ -192,6 +209,16 @@ sub print_tree
 
     return $closure->( $dep_tree, $max_depth, [ ] );
 }
+
+#---FUNCTION---
+# Usage   : my $traver = make_traverser( sub { print $_->[0], "\n"; } );
+#           $traver->( $tree );
+# Purpose : Creates a traverser closure that can be called on our tree
+#           structure.
+# Params  : $user_func - A coderef that will be called on every tree
+#                        node in the tree.
+# Comment : The tree is traversed with a Breadth-First-Search algorithm.
+#--------------
 
 sub make_traverser
 {
@@ -240,17 +267,13 @@ sub make_dep_tree
         # Give up on this path if we can't find a library file...
         if ($@) {
             die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
-            return undef;
+            return [ "*MISSING* $file_or_lib" ];
         }
 
         # Recurse until we have checked every library...
         my @found_paths;
 
-        NEEDED_LIBRARY:
         for my $sharedlib (@needed_libs) {
-#            next NEEDED_LIBRARY if ( $VERBOSE < 2 &&
-#                                     $sharedlib =~ /$IGNORELIB_MATCH/ );
-
             my $child_paths = $closure->($sharedlib);
 
             if ( defined $child_paths ) {
@@ -303,6 +326,8 @@ pod2usage({ -verbose => 1 }) if ($show_help);
 pod2usage() if (!$elf_file);
 pod2usage("error: $elf_file not found\n") if ( ! -e $elf_file );
 
+# We want to limit our printing depth if we have a greater verbosity
+# level, otherwise the tree gets very spammy!
 $max_depth ||= ( $verbose >= 1 ? 4 : 8 );
 
 # Create our shared library dependency tree...
@@ -378,12 +403,49 @@ treeldd - tree & ldd's forbidden lovechild
 treeldd <options> [path to binary] <target libraries>
 
  Options:
-  -h, --help       this brief help message
-  -v, --verbose    prints shared libraries that were already displayed
-                   previously, prepending them with an asterisk ("*")
-  -p, --packages   displays the pacman package which owns the library
-                   or file (slows program down a couple seconds)
-  -d, --depth=NUM  maximum depth to recurse into when displaying
+  -h, --help       a long help screen, describing options fully
+  -m, --man        display all documentation with a pager
+  -p, --packages   displays the pacman package which owns each library
+                   or file
+  -v, --verbose    increases how much of the tree is printed,
+                   - once displays redundant entries
+                   - twice displays infinitely redundant entries,
+                     limited by --depth
+  -d, --depth=NUM  how deep in the tree to print when verbose
+
+=head1 OPTIONS
+
+=over
+
+=item -v, --verbose
+
+Each time you use this flag it increases the verbosity level.  Because
+dependencies can be circular (A depends on B, B depends on C, C
+depends on A, etc.)  the tree is pretty much as large as you let it
+be.
+
+=over
+
+=item 0 (DEFAULT)
+
+Each library is only displayed once, even if it appears deeper inside
+the dependency tree.
+
+=item 1
+
+Duplicate libraries that are deeper in the tree are appended with an
+ellipsis ('...').  Libraries these duplicates require are not
+displayed.  This way the tree size is limited.
+
+=item 2
+
+There is no limit to how many times a library can be displayed in the
+tree.  This can display an infinitely large dependency tree, watch out!
+The only limit to tree size is the --depth option.
+
+=back
+
+=back
 
 =head1 DESCRIPTION
 
@@ -392,6 +454,14 @@ Target libraries can be specified to limit branches only to those
 leading from the elf binary to the provided libraries.
 
 The elf binary starting point can be a shared library or executable.
+
+=head1 BACKGROUND
+
+This utility was created in order for me to understand shared
+libraries on Linux.  I hadn't even considered that the L<ldd(1)>
+command displayed recursive dependencies.  I created this program in
+order to see what was really going on.  More specifically I wanted to
+see how packages of files depended on one another, in a hierarchy.
 
 =head1 SEE ALSO
 
@@ -417,8 +487,7 @@ Who started this mess in the first place.
 
 =head1 AUTHOR
 
-Justin Davis, C<< jrcd(eighty-three) at gmail dot com >>, aka juster
-on L<bbs.archlinux.org>
+Justin Davis, C<< jrcd83@gmail.com >>
 
 =head1 COPYRIGHT & LICENSE
 
