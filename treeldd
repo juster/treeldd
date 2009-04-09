@@ -1,53 +1,43 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
 use warnings;
 use strict;
 
-use List::MoreUtils  qw(pairwise);
 use Getopt::Long     qw(GetOptions);
+use DynaLoader       qw();
 use Pod::Usage;
 use IPC::Cmd         qw(can_run run);
-use Readonly;
 use Memoize;
 
-#use English          qw(-no_match_vars);
+our $VERSION = '0.01';
 
 ####
 #### CONSTANTS
 ####
 
-Readonly my $LD_PATHS            => [ qw{ /lib /usr/lib },
-                                      $ENV{LD_LIBRARY_PATH} ?
-                                      split /:/, $ENV{LD_LIBRARY_PATH} : () ];
-Readonly my $MISSINGLIB_EX       => 'Could not find shared library file:';
+my $MISSING_MATCH       = qr/ \A [*] MISSING [*] (.*) \z/xms;
 
-Readonly my $MISSING_MATCH       => qr/ \A [*] MISSING [*] /xms;
+my $READELF_OPTS        = '--dynamic';
+my $READELF_ERROR       = qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
 
-Readonly my $READELF_OPTS        => '--dynamic';
-Readonly my $READELF_ERROR       => qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
-
-Readonly my $READELF_SHARED_LIBS => qr{ Shared[ ]library:
-                                        [ ] [[] ([\w.]*) []] }xms;
-
-Readonly my $PACMAN_OPTS         => '-Qo';
-Readonly my $PACMAN_ERROR        => qr/ \A error: [ ] (.*?) $ /xms;
-Readonly my $PACMAN_OWNER        => qr/ is [ ] owned [ ] by [ ] (.*?) [ ] /xms;
+my $READELF_SHARED_LIBS = qr{ Shared[ ]library:
+                              [ ] [[] ([\w.]*) []] }xms;
 
 # Ignore libs from packages: glibc gcc-libs crypt
-Readonly my $IGNORELIB_LIST =>
+my $IGNORELIB_LIST =
     'lib(?:' . ( join '|', ( sort split /\s+/, << 'END_LIST' ) ) . ').so';
 BrokenLocale anl c cidn crypt dl m nsl nss_compat nss_dns nss_files
 nss_hesiod nss_nis nss_nisplus pthread resolv rt c m crypt X11 z bz2
-gcc_s gfortran gomp mudflap mudflapth objc ssp stdc++
+gcc_s gfortran gomp mudflap mudflapth objc ssp stdc++ util
 END_LIST
 
-Readonly my $IGNORELIB_MATCH => qr/$IGNORELIB_LIST/o;
+my $IGNORELIB_MATCH = qr/$IGNORELIB_LIST/o;
 
 ####
 #### GLOBALS
 ####
 
-my ($PACMAN_PATH, $READELF_PATH);
+my ($PACMAN_PATH, $READELF_PATH, $OPT_PRINT_PATH);
 
 
 ####
@@ -55,77 +45,14 @@ my ($PACMAN_PATH, $READELF_PATH);
 ####
 
 #---FUNCTION---
-# Usage   : my $owner = get_owner_pkg($sharedlib);
-# Params  : sharedlib - name of shared library or an absolute path to a
-#                       file
-# Returns : The name of the package who owns the file or library,
-#           or '?' if none was found.
-#--------------
-
-sub get_owner_pkg
-{
-    my ($sharedlib) = @_;
-
-    return '?' if ( $sharedlib =~ /$MISSING_MATCH/ );
-
-    my $file_path;
-    eval {
-        $file_path = ( -e $sharedlib ?
-                       $sharedlib : find_sharedlib_path($sharedlib) );
-    };
-
-    if ($@) {
-        die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ms );
-        return '?';
-    }
-
-    my ($success, $readelf_output);
-    $success = run( command => [ $PACMAN_PATH, $PACMAN_OPTS, $file_path ],
-                    buffer => \$readelf_output );
-
-    return '?' if ( !$success );
-#        my ($error) = $readelf_output =~ /$PACMAN_ERROR/;
-#        die "pacman command failed: $error\n";
-
-    my ($owner_pkg) = $readelf_output =~ /$PACMAN_OWNER/;
-    return $owner_pkg || '?';
-}
-memoize('get_owner_pkg');
-
-#---FUNCTION---
-# Usage   : my $abs_lib_path = find_sharedlib_path($lib_filename)
-# Purpose : Searches for the library file in standard locations.
-# Params  : lib_filename - the library filename (ie: libMagickCore.so.2)
-#                          without the leading path
-# Returns : The absolute path to the found library.
-#--------------
-
-sub find_sharedlib_path
-{
-    my ($lib_filename) = @_;
-    for my $lib_path ( map { $_ . "/$lib_filename" } @{$LD_PATHS} ) {
-        return $lib_path if ( -e $lib_path );
-    }
-
-    die "$MISSINGLIB_EX $lib_filename\n";
-}
-memoize('find_sharedlib_path');
-
-#---FUNCTION---
-# Usage   : my @needed_libs = readelf_sharedlibs($elf_file)
+# Usage   : my @needed_libs = readelf_depends($elf_file)
 # Purpose : Reads the shared libraries the ELF binary file depends on to run
-# Params  : elf_file - library name or absolute path to an ELF binary
-# Returns : Lists of shared library names that the ELF binary depends on.
+# Params  : elf_filepath - absolute path to an ELF binary
+# Returns : List of library names that the ELF binary depends on.
 #--------------
-
-sub readelf_sharedlibs
+sub readelf_depends
 {
-    my ($elf_file) = @_;
-
-    my $elf_filepath = ( -e $elf_file
-                         ? $elf_file
-                         : find_sharedlib_path($elf_file) );
-
+    my ($elf_filepath) = @_;
     my ($success, $readelf_output);
 
     $success = run( command => [ $READELF_PATH, $READELF_OPTS, $elf_filepath ],
@@ -136,16 +63,12 @@ sub readelf_sharedlibs
         die "readelf command failed: $error\n";
     }
 
-#     return grep { $_ !~ /$IGNORELIB_MATCH/ }
-#         $readelf_output =~ /$READELF_SHARED_LIBS/g;
-
-    my @libs = grep { $_ !~ /$IGNORELIB_MATCH/ }
+    my @libs = grep { !/$IGNORELIB_MATCH/ }
         $readelf_output =~ /$READELF_SHARED_LIBS/g;
 
     return @libs;
-
 }
-memoize('readelf_sharedlibs');
+memoize('readelf_depends');
 
 #---FUNCTION---
 # Usage   : my @output_lines = print_tree( $tree, $maxdepth );
@@ -155,11 +78,10 @@ memoize('readelf_sharedlibs');
 #           $maxdepth - How deep in the tree to display, depth 0 is the root
 # Returns : Nothing.
 #--------------
-
 sub print_tree
 {
-    die 'Invalid arguments to print_tree()' if @_ != 2;
-    my ($dep_tree, $max_depth) = @_;
+    die 'Invalid arguments to print_tree()' if @_ < 2;
+    my ($dep_tree, $max_depth, $print_paths) = @_;
     my ($closure);
 
     #---CLOSURE---
@@ -175,7 +97,7 @@ sub print_tree
 
         return () if ( $depth-- < 0 );
 
-        my $node_name = $tree->[0];
+        my $node_text = ( $print_paths ? $tree->[0][1] : $tree->[0][0] );
 
         my $prefix = '';
         if ( @$depth_counts ) {
@@ -192,7 +114,7 @@ sub print_tree
         }
 
         #my @tree_lines = ( "$prefix$node_name\n" );
-        print "$prefix$node_name\n";
+        print "$prefix$node_text\n";
 
         # Recurse through the the children nodes...
         my $child_count = $#$tree;
@@ -211,35 +133,63 @@ sub print_tree
 }
 
 #---FUNCTION---
-# Usage   : my $traver = make_traverser( sub { print $_->[0], "\n"; } );
+# Usage   : my $traver = make_traverser( { print (shift)->[0], "\n"; }, 'bfs' );
 #           $traver->( $tree );
 # Purpose : Creates a traverser closure that can be called on our tree
 #           structure.
 # Params  : $user_func - A coderef that will be called on every tree
 #                        node in the tree.
+#           $type      - Either 'bfs' or 'dfs', instructing whether to use
+#                        a breadth-first search or a depth-first search.
+#                        Defaults to 'bfs' if not provided, case-insensitive.
 # Comment : The tree is traversed with a Breadth-First-Search algorithm.
 #--------------
-
 sub make_traverser
 {
-    my ($user_func) = @_;
+    die 'Invalid arguments to make_traverser' if ( @_ < 1 );
+    my ($user_func, $type) = @_;
 
     my (%we_visited, $closure);
 
-    $closure = sub {
+    $type = 'BFS' unless ( defined $type );
+    $type = uc $type;
+
+    my $bfs_code = sub {
         my $tree_node = shift;
         return if $we_visited{$tree_node};
 
+        local $_ = $tree_node;
         $user_func->($tree_node);
         $we_visited{$tree_node} = 1;
 
         for my $i ( 1 .. $#$tree_node ) {
             $closure->($tree_node->[$i]);
         }
+
         return;
     };
 
+    my $dfs_code = sub {
+        my $tree_node = shift;
+        return if $we_visited{$tree_node}++;
+
+        for my $i ( 1 .. $#$tree_node ) {
+            $closure->($tree_node->[$i]);
+        }
+
+        local $_ = $tree_node;
+        $user_func->($tree_node);
+
+        return;
+    };
+
+    $closure = ( $type eq 'BFS' ? $bfs_code :
+                 $type eq 'DFS' ? $dfs_code :
+                 die q{Invalid argument $type, must be either 'DFS' or 'BFS'}
+                );
+
     return $closure;
+
 }
 
 #---FUNCTION---
@@ -248,7 +198,6 @@ sub make_traverser
 # Returns : A tree represented as nested array refs.  This tree represents
 #           all the dependencies of the program, the deps' dependencies, etc...
 #--------------
-
 sub make_dep_tree
 {
     # Create a closure in order to keep our hash hidden...
@@ -259,16 +208,19 @@ sub make_dep_tree
 
         return $node_of{$file_or_lib} if ( exists $node_of{$file_or_lib} );
 
-        my $new_node = [ $file_or_lib ];
+        my $file_fqp = ( -e $file_or_lib
+                         ? $file_or_lib
+                         : DynaLoader::dl_findfile($file_or_lib) );
+
+        my $new_node = ( $file_fqp
+                         ? [ [ $file_or_lib, $file_fqp ] ]
+                         : [ [ "*MISSING* $file_or_lib", undef ] ] );
         $node_of{$file_or_lib} = $new_node;
 
-        my @needed_libs = eval { readelf_sharedlibs($file_or_lib) };
-
         # Give up on this path if we can't find a library file...
-        if ($@) {
-            die $@ if ( $@ !~ /\A$MISSINGLIB_EX/ );
-            return [ "*MISSING* $file_or_lib" ];
-        }
+        return $new_node unless ($file_fqp);
+
+        my @needed_libs = eval { readelf_depends($file_fqp) };
 
         # Recurse until we have checked every library...
         my @found_paths;
@@ -287,6 +239,63 @@ sub make_dep_tree
     return $closure->(@_);
 }
 
+#---FUNCTION---
+# Usage   : my $was_found = prune_tree( $tree, $target_lib );
+# Purpose : Deletes any sub-trees that do not contain the target.
+# Params  : $tree       - A dependency tree as returned by make_dep_tree
+#           $target_lib - The _exact_ library _name_ to search for.
+# Returns : 1 if the target_lib was found in the given tree
+#           0 if the target_lib could not be found
+# Comment : The tree is modified in place and completely destroyed
+#           if the target isn't found.
+#--------------
+sub prune_tree
+{
+    die 'Invalid arguments to prune_tree' if ( @_ != 2 );
+    my ($tree, $target_lib) = @_;
+
+    my (%did_visit, $closure);
+
+    $closure = sub {
+        my $tree_node = shift;
+
+        my $node_name = $tree_node->[0][0];
+
+        # Watchout for missing libs we tagged earlier...
+        if ( $node_name =~ /$MISSING_MATCH/o ) {
+            $node_name = $1;
+        }
+
+        # Check for our target before we check if we already visited
+        # this node, for there could be many instances of our target...
+        if ( $node_name eq $target_lib ) {
+            splice @{$tree_node}, 1;
+            return 1;
+        }
+
+        return 0 if ( $did_visit{$tree_node}++ );
+
+        my $was_found = 0;
+        my $i         = 1;
+
+        # Remove sub-trees that do not contain our target...
+        RECURSE_LOOP:
+        while ( $i <= $#$tree_node ) {
+            my $child_node = $tree_node->[$i];
+            unless ( $closure->($child_node) ) {
+                splice @{$tree_node}, $i, 1;
+                next RECURSE_LOOP;
+            }
+            $was_found = 1;
+            ++$i;
+        }
+
+        return $was_found;
+    };
+
+    return $closure->($tree);
+}
+
 
 ####
 #### SCRIPT START
@@ -298,7 +307,7 @@ $PACMAN_PATH  = can_run('pacman')
 $READELF_PATH = can_run('readelf')
     or die "error: Cannot find the readelf program, a requirement of $0\n";
 
-die << 'END_ERROR' if ! IPC::Cmd->can_capture_buffer;
+die << 'END_ERROR' unless ( IPC::Cmd->can_capture_buffer );
 Unknown Internal Error:
 
 The perl IPC::Cmd module reports it cannot capture output from called
@@ -307,19 +316,19 @@ modules for perl on your system.
 END_ERROR
 
 # Get command lines options and print usage if a problem occurs...
-my ($show_pkgs, $show_help, $show_man,
+my ($show_path, $show_help, $show_man,
     $max_depth, $use_bfs, $verbose);
 
 $verbose = 0;
 
 GetOptions( 'depth=i'  => \$max_depth,
-            'packages' => \$show_pkgs,
             'verbose+' => \$verbose,
 
+            'path'    => \$show_path,
             'help'     => \$show_help,
             'man'      => \$show_man );
 
-my ($elf_file, @target_libs) = @ARGV;
+my ($elf_file, $target_lib) = @ARGV;
 
 pod2usage({ -verbose => 2 }) if ($show_man);
 pod2usage({ -verbose => 1 }) if ($show_help);
@@ -333,24 +342,19 @@ $max_depth ||= ( $verbose >= 1 ? 4 : 8 );
 # Create our recursive dependency tree...
 my $dep_tree = make_dep_tree($elf_file);
 
-# Tack the name of the package who owns the file onto the library name
-# if requested with the --packages option.
-if ($show_pkgs) {
-    my $pkg_tacker = make_traverser( sub {
-                                         my $node    = shift;
-                                         my $owner   = get_owner_pkg($node->[0]);
-                                         $node->[0] .= " ($owner)";
-                                     } );
-    $pkg_tacker->($dep_tree);
-}
-
 die 'Unknown internal error: $verbose is negative' if ( $verbose < 0 );
+
+if ($target_lib) {
+    die qq{Could not find target library named '$target_lib' in dependencies\n}
+        unless prune_tree( $dep_tree, $target_lib );
+
+    print_tree( $dep_tree, $max_depth, $show_path );
+    exit 0;
+}
 
 # Clip our tree unless we have full verbosity...
 if ( $verbose < 2 ) {
     my $tree_clipper = make_traverser( do {
-        my %has_dup;
-
         # Create a different clipping action depending on verbosity level...
         my @dispatch =
             (
@@ -358,25 +362,30 @@ if ( $verbose < 2 ) {
              sub {
                  my ($node, $child_idx) = @_;
                  splice @{$node}, $child_idx, 1;
+                 return $child_idx;
              },
              # Tag all duplicate copies with '...' & remove children
              sub {
-                 my ($node, $child_idx) = @_;
-                 my $child_name         = $node->[$child_idx][0];
-                 $node->[$child_idx]    = [ "$child_name ..." ];
+                 my ($node, $child_idx)        = @_;
+                 my ($child_name, $child_path) = @{$node->[$child_idx][0]};
+                 $node->[$child_idx]    = [ [ "$child_name ...", "$child_path ..." ] ];
+                 return $child_idx + 1;
              },
             );
 
-        # Search for duplicates and "clip" them...
+        # Search for duplicates and "clip" them with BFS traverser...
         my $clip_func = $dispatch[$verbose];
+        my %has_dup;
+
         sub {
             my $node = shift;
-            my $i = 1;
+            my $i    = 1;
+
             CHILD_NODE:
             while ( $i <= $#$node ) {
                 my $child_node = $node->[$i];
                 if ( $has_dup{$child_node}++ ) {
-                    $clip_func->($node, $i);
+                    $i = $clip_func->($node, $i);
                     next CHILD_NODE;
                 }
                 ++$i;
@@ -388,7 +397,7 @@ if ( $verbose < 2 ) {
     $tree_clipper->($dep_tree);
 }
 
-print_tree( $dep_tree, $max_depth );
+print_tree( $dep_tree, $max_depth, $show_path );
 
 exit 0;
 
@@ -398,20 +407,28 @@ __END__
 
 treeldd - tree & ldd's forbidden lovechild
 
+=head1 VERSION
+
+Version 0.01 -- April 9, 2009
+First Public Release
+
 =head1 SYNOPSIS
 
-treeldd <options> [path to binary] <target libraries>
+treeldd <options> [path to binary] <target library>
 
- Options:
-  -h, --help       a long help screen, describing options fully
-  -m, --man        display all documentation with a pager
-  -p, --packages   displays the pacman package which owns each library
-                   or file
-  -v, --verbose    increases how much of the tree is printed,
-                   - once displays redundant entries
-                   - twice displays infinitely redundant entries,
-                     limited by --depth
-  -d, --depth=NUM  how deep in the tree to print when verbose
+If a target library is specified treeldd display only paths going to
+the target library.
+
+  Options:
+   -h, --help       a long help screen, describing options fully
+   -m, --man        display all documentation with a pager like more
+   -p, --path       prints out the full path of each library
+   -v, --verbose    increases how much of the tree is printed,
+                    - once displays redundant entries
+                    - twice displays infinitely redundant entries,
+                      limited only by --depth
+                    (ignored when target library is specified)
+   -d, --depth=NUM  how deep in the tree to print when verbose
 
 =head1 OPTIONS
 
@@ -426,18 +443,18 @@ be.
 
 =over
 
-=item 0 (DEFAULT)
+=item B<0 (DEFAULT)>
 
 Each library is only displayed once, even if it appears deeper inside
 the dependency tree.
 
-=item 1
+=item B<1>
 
 Duplicate libraries that are deeper in the tree are appended with an
 ellipsis ('...').  Libraries these duplicates require are not
 displayed.  This way the tree size is limited.
 
-=item 2
+=item B<2>
 
 There is no limit to how many times a library can be displayed in the
 tree.  This can display an infinitely large dependency tree, watch out!
@@ -450,10 +467,13 @@ The only limit to tree size is the --depth option.
 =head1 DESCRIPTION
 
 Displays a tree diagram representing shared library dependencies.
-Target libraries can be specified to limit branches only to those
-leading from the elf binary to the provided libraries.
+A target library can be specified to limit branches only to those
+leading from the elf binary to the given library name.
 
 The elf binary starting point can be a shared library or executable.
+
+Common libraries from glibc, gcc-libs, and crypt are ignored because
+they appear so regularly they become redundant.
 
 =head1 BACKGROUND
 
@@ -479,9 +499,12 @@ Who introduced me to lists of shared libraries.
 
 Who reads the (non-recursive) list of needed shared libraries for us.
 
-=item L<pacman(8)>
+=item archtreeldd
 
-Who started this mess in the first place.
+The sister script to this script which can help to find libraries
+that go missing when you upgrade a pacman package.  Also useful to see
+the tangled web of package dependencies through their used shared
+libraries.
 
 =back
 

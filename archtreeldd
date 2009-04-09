@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+##
+# NAME
+# archtreeldd
+#
+# DESCRIPTION
+# Simple sister-script to the treeldd perl script. Lists the pacman packages
+# who own each library file that is displayed by treeldd.
+#
+# AUTHOR
+# jrcd83 at gmail.com
+#
+# COPYRIGHT & LICENSE
+# Copyright 2009 Justin Davis, all rights reserved.
+#
+# This program is free software; you can redistribute it and/or modify it
+# under the same terms as Perl itself.
+##
+
+treeldd --path $* | perl -Mstrict -w -aple '
+next if ( /[.]{3}\z/ || /[*]MISSING[*]/ );
+my $pacman_out = `pacman -Qo $F[-1]`;
+my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
+$pkg ||= "?";
+$_ .= " ($pkg)";
+'
