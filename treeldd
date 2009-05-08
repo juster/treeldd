@@ -214,7 +214,8 @@ sub make_dep_tree
 
         my $new_node = ( $file_fqp
                          ? [ [ $file_or_lib, $file_fqp ] ]
-                         : [ [ "*MISSING* $file_or_lib", undef ] ] );
+                         : [ [ ("*MISSING* $file_or_lib") x 2 ] ] );
+
         $node_of{$file_or_lib} = $new_node;
 
         # Give up on this path if we can't find a library file...

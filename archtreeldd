@@ -18,7 +18,7 @@
 # under the same terms as Perl itself.
 ##
 
-treeldd --path $* | perl -Mstrict -w -aple '
+./treeldd --path $* | perl -Mstrict -w -aple '
 next if ( /[.]{3}\z/ || /[*]MISSING[*]/ );
 my $pacman_out = `pacman -Qo $F[-1]`;
 my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
