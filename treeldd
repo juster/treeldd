@@ -115,7 +115,7 @@ sub _is_new_path
 #--------------
 sub print_tree
 {
-    die 'Invalid arguments to print_tree()' if @_ < 2;
+    croak 'Invalid arguments to print_tree()' if @_ < 2;
     my ($dep_tree, $max_depth, $print_paths) = @_;
     my ($closure);
 
@@ -181,7 +181,7 @@ sub print_tree
 #--------------
 sub make_traverser
 {
-    die 'Invalid arguments to make_traverser' if ( @_ < 1 );
+    croak 'Invalid arguments to make_traverser' if ( @_ < 1 );
     my ($user_func, $type) = @_;
 
     my (%we_visited, $closure);
@@ -220,7 +220,7 @@ sub make_traverser
 
     $closure = ( $type eq 'BFS' ? $bfs_code :
                  $type eq 'DFS' ? $dfs_code :
-                 die q{Invalid argument $type, must be either 'DFS' or 'BFS'}
+                 croak q{Invalid argument $type, must be either 'DFS' or 'BFS'}
                 );
 
     return $closure;
@@ -304,7 +304,7 @@ sub _lib_abs_path
 #--------------
 sub prune_tree
 {
-    die 'Invalid arguments to prune_tree' if ( @_ != 2 );
+    croak 'Invalid arguments to prune_tree' if ( @_ != 2 );
     my ($tree, $target_lib) = @_;
 
     my (%did_visit, $closure);
