@@ -486,14 +486,14 @@ the target library.
 Each time you use this flag it increases the verbosity level.  Because
 dependencies can be circular (A depends on B, B depends on C, C
 depends on A, etc.)  the tree is pretty much as large as you let it
-be.
+be.  This also means it has cycles and is not a true "tree", oops!
 
 =over
 
 =item B<0 (DEFAULT)>
 
 Each library is only displayed once, even if it appears deeper inside
-the dependency tree.
+the dependency tree.  This creates a tree without cycles.
 
 =item B<1>
 
