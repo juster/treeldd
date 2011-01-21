@@ -1,15 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 ##
 # NAME
 # archtreeldd
 #
 # DESCRIPTION
-# Simple sister-script to the treeldd perl script. Lists the pacman packages
-# who own each library file that is displayed by treeldd.
+# Simple sister-script to the treeldd perl script. Lists the pacman package
+# which owns each library file that is displayed by treeldd.
 #
 # AUTHOR
-# jrcd83 at gmail.com
+# jrcd83 gmail
 #
 # COPYRIGHT & LICENSE
 # Copyright 2009 Justin Davis, all rights reserved.
