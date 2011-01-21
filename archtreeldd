@@ -4,17 +4,17 @@ use warnings;
 use strict;
 
 open my $treepipe, "treeldd --path @ARGV |"
-    or die "Failed to run treeldd make sure it is installed.\n";
+    or die "Make sure treeldd is installed and in your PATH.\n";
 
 while ( <$treepipe> ) {
-    print, next unless ( /[.]{3}\z/ || /[*]MISSING[*]/ );
+    print, next if ( /[.]{3}\z/ || /[*]MISSING[*]/ );
 
-    my @fields = split;
-    my $pacman_out = `pacman -Qo $fields[-1]`;
+    chomp;
+    my ($path) = reverse split;
+    my $pacman_out = `pacman -Qo $path`;
     my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
     $pkg ||= q{?};
-    $_ .= " ($pkg)";
-    print;
+    print "$_ ($pkg)\n";
 }
 
 exit 0;
