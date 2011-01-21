@@ -3,17 +3,25 @@
 use warnings;
 use strict;
 
+sub file_packager
+{
+    my ($file_path) = @_;
+    my $pacman_out = `pacman -Qo $file_path`;
+    my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
+    return $pkg || q{?};
+}
+
 open my $treepipe, "treeldd --path @ARGV |"
     or die "Make sure treeldd is installed and in your PATH.\n";
 
+my %owner_of;
+
 while ( <$treepipe> ) {
-    print, next if ( /[.]{3}\z/ || /[*]MISSING[*]/ );
+    print, next if ( /[.]{3}$/ || /[*]MISSING[*]/ );
 
     chomp;
     my ($path) = reverse split;
-    my $pacman_out = `pacman -Qo $path`;
-    my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
-    $pkg ||= q{?};
+    my $pkg = $owner_of{$path} ||= file_packager( $path );
     print "$_ ($pkg)\n";
 }
 
