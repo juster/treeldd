@@ -53,6 +53,8 @@ if ( $ENV{LD_LIBRARY_PATH} ) {
     push @Lib_search_paths, @env_paths;
 }
 
+my ($Dont_ignore_libs); # storage for the --stdlibs cmdline option
+
 
 ####
 #### FUNCTIONS
@@ -87,8 +89,10 @@ sub readelf_depends
         push @Lib_search_paths, @rpaths;
     }
 
-    my @libs = grep { !/$IGNORELIB_MATCH/ }
-        $readelf_output =~ /$READELF_SHARED_LIBS/g;
+    my @libs = $readelf_output =~ /$READELF_SHARED_LIBS/g;
+    unless ( $Dont_ignore_libs ) {
+        @libs = grep { !/$IGNORELIB_MATCH/ } @libs;
+    }
 
     return @libs;
 }
@@ -372,9 +376,12 @@ $verbose = 0;
 GetOptions( 'depth=i'  => \$max_depth,
             'verbose+' => \$verbose,
 
-            'path'    => \$show_path,
+            'path'     => \$show_path,
             'help'     => \$show_help,
-            'man'      => \$show_man );
+            'man'      => \$show_man,
+
+            'stdlibs'  => \$Dont_ignore_libs,
+           );
 
 my ($elf_file, $target_lib) = @ARGV;
 
@@ -463,8 +470,8 @@ Version 0.01
 
 treeldd <options> [path to binary] <target library>
 
-If a target library is specified treeldd display only paths going to
-the target library.
+If a target library is specified, treeldd display a minimum spanning
+tree ending at the target library.
 
   Options:
    -h, --help       a long help screen, describing options fully
@@ -476,6 +483,8 @@ the target library.
                       limited only by --depth
                     (ignored when target library is specified)
    -d, --depth=NUM  how deep in the tree to print when verbose
+   -s, --stdlibs    display standard libraries (ie: glibc, gcc-libs, crypt)
+                    instead of ignoring them by default
 
 =head1 OPTIONS
 
