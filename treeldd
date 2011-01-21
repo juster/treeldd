@@ -44,7 +44,8 @@ my $IGNORELIB_MATCH = qr/$IGNORELIB_LIST/o;
 my ($Readelf_path, @Lib_search_paths);
 
 $Readelf_path = can_run('readelf')
-    or die "error: Cannot find the readelf program, a requirement of $0\n";
+    or die "error: Cannot find the readelf program, ",
+    "a requirement of treeldd.\n";
 
 @Lib_search_paths = qw{ /lib /usr/lib /usr/local/lib };
 if ( $ENV{LD_LIBRARY_PATH} ) {
@@ -456,8 +457,7 @@ treeldd - tree & ldd's forbidden lovechild
 
 =head1 VERSION
 
-Version 0.01 -- April 9, 2009
-First Public Release
+Version 0.01
 
 =head1 SYNOPSIS
 
@@ -525,7 +525,7 @@ they appear so regularly they become redundant.
 =head1 BACKGROUND
 
 This utility was created in order for me to understand shared
-libraries on Linux.  I hadn't even considered that the L<ldd(1)>
+libraries on Linux.  I hadn't even considered that the L<ldd>(1)
 command displayed recursive dependencies.  I created this program in
 order to see what was really going on.  More specifically I wanted to
 see how packages of files depended on one another, in a hierarchy.
@@ -534,19 +534,19 @@ see how packages of files depended on one another, in a hierarchy.
 
 =over
 
-=item L<tree(1)>
+=item L<tree>(1)
 
 Where the tree display format came from.
 
-=item L<ldd(1)>
+=item L<ldd>(1)
 
 Who introduced me to lists of shared libraries.
 
-=item L<readelf(1)>
+=item L<readelf>(1)
 
 Who reads the (non-recursive) list of needed shared libraries for us.
 
-=item archtreeldd
+=item L<archtreeldd>(1)
 
 The sister script to this script which can help to find libraries
 that go missing when you upgrade a pacman package.  Also useful to see
@@ -561,7 +561,7 @@ Justin Davis, C<< <jrcd83 at gmail.com> >>
 
 =head1 COPYRIGHT & LICENSE
 
-Copyright 2009 Justin Davis, all rights reserved.
+Copyright 2011 Justin Davis, all rights reserved.
 
 This program is free software; you can redistribute it and/or modify it
 under the same terms as Perl itself.

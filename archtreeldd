@@ -1,27 +1,46 @@
-#!/bin/sh
+#!/usr/bin/env perl
 
-##
-# NAME
-# archtreeldd
-#
-# DESCRIPTION
-# Simple sister-script to the treeldd perl script. Lists the pacman package
-# which owns each library file that is displayed by treeldd.
-#
-# AUTHOR
-# jrcd83 gmail
-#
-# COPYRIGHT & LICENSE
-# Copyright 2009 Justin Davis, all rights reserved.
-#
-# This program is free software; you can redistribute it and/or modify it
-# under the same terms as Perl itself.
-##
+use warnings;
+use strict;
 
-./treeldd --path $* | perl -Mstrict -w -aple '
-next if ( /[.]{3}\z/ || /[*]MISSING[*]/ );
-my $pacman_out = `pacman -Qo $F[-1]`;
-my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
-$pkg ||= "?";
-$_ .= " ($pkg)";
-'
+open my $treepipe, "treeldd --path @ARGV |"
+    or die "Failed to run treeldd make sure it is installed.\n";
+
+while ( <$treepipe> ) {
+    print, next unless ( /[.]{3}\z/ || /[*]MISSING[*]/ );
+
+    my @fields = split;
+    my $pacman_out = `pacman -Qo $fields[-1]`;
+    my ($pkg) = $pacman_out =~ /is owned by (.*)$/;
+    $pkg ||= q{?};
+    $_ .= " ($pkg)";
+    print;
+}
+
+exit 0;
+
+__END__
+
+=head1 NAME
+
+archtreeldd
+
+=head1 DESCRIPTION
+
+Simple sister-script to the treeldd perl script. Lists the pacman package
+which owns each library file that is displayed by treeldd.
+
+=head1 SEE ALSO
+
+L<treeldd>(1)
+
+=head1 AUTHOR
+
+Justin Davis C<< <jrcd83 at gmail dot com> >>
+
+=head1 COPYRIGHT & LICENSE
+
+Copyright 2011 Justin Davis, all rights reserved.
+
+This program is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
