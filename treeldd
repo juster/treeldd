@@ -15,7 +15,7 @@ our $VERSION = '0.01';
 #### CONSTANTS
 ####
 
-my $MISSING_MATCH       = qr/ \A [*] MISSING [*] (.*) \z/xms;
+my $MISSING_MATCH       = qr/ MISSING /xms;
 
 my $READELF_OPTS        = '--dynamic';
 my $READELF_ERROR       = qr/ \A readelf: [ ] Error: [ ] (.*) /xms;
@@ -254,7 +254,7 @@ sub make_dep_tree
 
         my $new_node = ( $file_fqp
                          ? [ [ $file_or_lib, $file_fqp ] ]
-                         : [ [ ("*MISSING* $file_or_lib") x 2 ] ] );
+                         : [ [ ("\e[1;97m$file_or_lib\e[5;91m MISSING\e[0m") x 2 ] ] );
 
         $node_of{$file_or_lib} = $new_node;
 
